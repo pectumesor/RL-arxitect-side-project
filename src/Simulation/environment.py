@@ -52,15 +52,8 @@ class MyMultiGoalEnv(gym.Env):
         # Turn list back to Multipolygon to be able to use shapely.Multipolygon functions
         self.inner_polygons = shapely.multipolygons(shapely.get_parts(self.inner_polygons))
 
-        self.observation_space = spaces.Box(low=np.array([self.bounding_box[0], self.bounding_box[1]]),
-                                  high=np.array([self.bounding_box[2], self.bounding_box[3]]),
-                                  dtype=np.float64)
-
-        self.action_space = spaces.Discrete(20)
-
         # Initialize Lidar with max_range equal to speed
         self.lidar = Lidar(walls=self.walls, max_range=200, num_rays=360)
-
 
         nurse_station =  [np.array([station['x'], station['y']]) for station
                                     in poi['nurse_station'].values()]
@@ -72,9 +65,22 @@ class MyMultiGoalEnv(gym.Env):
         random_patients = random.choices(patient_room, k=amount_patients)
         self.agent = NurseAgent(
             {
-                'nurse_station': {'position': random_nurse_station, 'door': self.lidar.find_door(random_nurse_station)},
-                f"patient_room_{0}": {'position': random_patients[0], 'door': self.lidar.find_door(random_patients[0])}},
-                 self.walls, amount_patients=amount_patients)
+                'nurse_station': {'position': random_nurse_station, 'door': self.lidar.find_door(random_nurse_station,90.0)},
+                f"patient_room_{0}": {'position': random_patients[0], 'door': self.lidar.find_door(random_patients[0], 90.0)}},
+                 self.walls, amount_patients=amount_patients,
+                bounding_box=self.bounding_box)
+
+        # Define observation and action space
+        lidar_dim = self.agent.lidar.num_rays * 2
+        goal_dim = 2
+        self.observation_space = spaces.Box(
+            low=-np.inf,
+            high=np.inf,
+            shape=(lidar_dim + goal_dim,),  # e.g., (82,)
+            dtype=np.float32
+        )
+
+        self.action_space = spaces.Discrete(self.agent.num_actions)
 
     def _get_node_position(self, graph_data, node_id):
         for node in graph_data["nodes"]:
@@ -88,7 +94,8 @@ class MyMultiGoalEnv(gym.Env):
     def reset(self, seed=None, options=None):
         # Reset agents position and return his observation (i.e., position)
         super().reset(seed=seed)
-        return self.agent.reset()
+        obs = self.agent.reset()
+        return obs, {}
 
 
     def step(self, action):
@@ -165,6 +172,6 @@ class MyMultiGoalEnv(gym.Env):
         pygame.draw.line(self.screen, (0, 0, 255), nurse_pos, end_facing, 2)
 
         pygame.display.flip()
-        self.clock.tick(30)
+        self.clock.tick(3)
 
 
