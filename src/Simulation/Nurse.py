@@ -1,19 +1,15 @@
 import numpy as np
-from constants import NEARBY_ZONE, LARGE_VALUE, FRACTION
+from constants import NEARBY_ZONE
 from lidar import Lidar
 import random
 
 class FSMNurseState:
     CHECKING_PATIENT_LIST = 'CheckingPatientList'
-    LEAVING_NURSE_STATION = 'LeavingNurseStation'
     PERFORMING_ROUTE = 'PerformingRoute'
-    REACHED_PATIENT = 'ReachedPatient'
     TREATING_PATIENT = 'TreatingPatient'
-    LEAVING_PATIENT_ROOM = 'LeavingPatientRoom'
     RETURNING_TO_STATION = 'ReturningToStation'
-    REACHED_STATION = 'ReachedStation'
     COMPLETED = 'Completed'
-
+    OUTSIDE = 'Outside'
 
 class NurseAgent:
     def __init__(self, poi: dict, walls, amount_patients: int, bounding_box):
@@ -21,97 +17,90 @@ class NurseAgent:
         self.curr_patient = 0
         self.current_target = None
         self.state = FSMNurseState.CHECKING_PATIENT_LIST
-        self.position = None  # Starting position
-        self.speed = 1.0  # Units per step
-        self.facing = np.pi/2
+        self.position = None
+        self.speed = 20.0
+        self.facing = np.pi / 2  # Facing North initially
         self.walls = walls
         self.amount_patients = amount_patients
         self.bounding_box = bounding_box
 
         self.epsilon = 0.8
-        self.treatment_delay = 100
+        self.treatment_delay = 10
 
-        # Set up angle range
-        self.num_actions = 20
-        self.angle_range = np.linspace(-np.pi / 2, np.pi / 2, self.num_actions)
+        self.actions = {
+            0: ("face", 0),          # East
+            1: ("face", np.pi / 2),  # North
+            2: ("face", np.pi),      # West
+            3: ("face", 3 * np.pi / 2),  # South
+            4: ("move", -np.pi / 2),  # Left
+            5: ("move", -np.pi / 4),  # Forward-left
+            6: ("move", 0.0),         # Forward
+            7: ("move", np.pi / 4),   # Forward-right
+            8: ("move", np.pi / 2),   # Right
+        }
+        self.num_actions = len(self.actions)
 
-        # Initialize Lidar with max_range equal to speed
-        self.lidar = Lidar(walls=self.walls, max_range=50, num_rays=self.num_actions)
+        self.lidar = Lidar(walls=self.walls, max_range=self.speed, num_rays=self.num_actions)
+
+        self.position_history = []
+        self.position_history_maxlen = 20
+        self.revisit_distance_threshold = 20.0
 
     def reset(self):
         self.position = self.poi['nurse_station']['position']
         self.curr_patient = 0
         self.state = FSMNurseState.CHECKING_PATIENT_LIST
-        self.facing = np.pi/2
-        self.current_target = self.poi['nurse_station']['door']
+        self.facing = np.pi / 2
+        self.current_target = self.poi[f'patient_room_{self.curr_patient}']['position']
+        self.position_history.clear()
         return self.get_observation()
 
     def update(self, action):
         prev_position = self.position.copy()
         prev_state = self.state
 
-        collided = self._fsm_step(action)  # Your existing FSM logic (moved to helper for clarity)
+        collided = self._fsm_step(action)
 
-        reward = -1  # Step penalty to encourage faster completion
+        reward = -1  # Step penalty
         done = False
 
-        if collided: # Collided with wall or walked over one, very big penalization
-            reward -= 100
+        if collided:
+            reward -= 50  # Flat collision penalty
 
-        # Penalize no movement (e.g., stuck or bumping walls)
-        movement = np.linalg.norm(self.position - prev_position)
-        if movement < 0.1:
-            reward -= 10 # Encourage not moving at all
-        else:
-            reward += 5 # Motivate movement
+        # Reward for moving closer to goal
+        dist_prev = np.linalg.norm(prev_position - self.current_target)
+        dist_now = np.linalg.norm(self.position - self.current_target)
+        if dist_now < dist_prev:
+            reward += 100  # Getting closer
 
-            # Bonus rewards for reaching goals
+        # Bonus for key state transitions
         if self.state != prev_state:
-            if self.state in [FSMNurseState.REACHED_PATIENT, FSMNurseState.REACHED_STATION]:
+            if self.state == FSMNurseState.TREATING_PATIENT:
                 reward += 50
             elif self.state == FSMNurseState.COMPLETED:
                 reward += 100
                 done = True
+            elif self.state == FSMNurseState.OUTSIDE: # Outside the drawing, very bad
+                reward -=100
+                done = True
 
         obs = self.get_observation()
-        info = {'state': self.state }
+        info = {'state': self.state}
 
         return obs, reward, done, False, info
 
     def _fsm_step(self, action):
-
         match self.state:
             case FSMNurseState.CHECKING_PATIENT_LIST:
-                self.current_target = self.poi['nurse_station']['door']
-                self.state = FSMNurseState.LEAVING_NURSE_STATION
+                self.current_target = self.poi[f'patient_room_{self.curr_patient}']['position']
+                self.state = FSMNurseState.PERFORMING_ROUTE
                 return False
-
-            case FSMNurseState.LEAVING_NURSE_STATION:
-                distance_to_target = np.linalg.norm(self.position - self.current_target)
-                if distance_to_target > NEARBY_ZONE:
-                    self.speed = distance_to_target
-                    return self.step(action)
-                elif distance_to_target <= NEARBY_ZONE:
-                    self.current_target = self.poi[f"patient_room_{self.curr_patient}"]['door']
-                    self.state = FSMNurseState.PERFORMING_ROUTE
-                    return False
 
             case FSMNurseState.PERFORMING_ROUTE:
                 distance_to_target = np.linalg.norm(self.position - self.current_target)
                 if distance_to_target > NEARBY_ZONE:
-                    self.speed = distance_to_target
                     return self.step(action)
-                elif distance_to_target <= NEARBY_ZONE:
-                    self.current_target = self.poi[f"patient_room_{self.curr_patient}"]['position']
-                    self.state = FSMNurseState.REACHED_PATIENT
-                    return False
-
-            case FSMNurseState.REACHED_PATIENT:
-                distance_to_target = np.linalg.norm(self.position - self.current_target)
-                if distance_to_target > NEARBY_ZONE:
-                    self.speed = distance_to_target
-                    return self.step(action)
-                elif distance_to_target <= NEARBY_ZONE:
+                else:
                     self.state = FSMNurseState.TREATING_PATIENT
                     return False
 
@@ -119,100 +108,63 @@ class NurseAgent:
                 if self.treatment_delay > 0:
                     self.treatment_delay -= 1
                     return False
-                elif self.treatment_delay <= 0:
-                    self.current_target = self.poi[f"patient_room_{self.curr_patient}"]['door']
-                    self.curr_patient +=1
-                    self.treatment_delay = 100
-                    self.state = FSMNurseState.LEAVING_PATIENT_ROOM
-                    return False
-
-            case FSMNurseState.LEAVING_PATIENT_ROOM:
-                distance_to_target = np.linalg.norm(self.position - self.current_target)
-                if distance_to_target > NEARBY_ZONE:
-                    self.speed = distance_to_target
-                    return self.step(action)
-                elif distance_to_target <= NEARBY_ZONE:
-                    if self.curr_patient >= self.amount_patients - 1:
-                        self.current_target = self.poi['nurse_station']['door']
+                else:
+                    self.curr_patient += 1
+                    if self.curr_patient >= self.amount_patients:
+                        self.current_target = self.poi['nurse_station']['position']
                         self.state = FSMNurseState.RETURNING_TO_STATION
                     else:
-                        self.current_target = self.poi[f"patient_room_{self.curr_patient}"]['door']
+                        self.current_target = self.poi[f'patient_room_{self.curr_patient}']['position']
+                        self.treatment_delay = 100
                         self.state = FSMNurseState.PERFORMING_ROUTE
                     return False
 
             case FSMNurseState.RETURNING_TO_STATION:
                 distance_to_target = np.linalg.norm(self.position - self.current_target)
-                if distance_to_target < NEARBY_ZONE:
-                    self.speed = distance_to_target
+                if distance_to_target > NEARBY_ZONE:
                     return self.step(action)
-                elif distance_to_target <= NEARBY_ZONE:
-                    self.current_target = self.poi['nurse_station']['position']
-                    self.state = FSMNurseState.REACHED_STATION
-                    return False
-
-            case FSMNurseState.REACHED_STATION:
-                distance_to_target = np.linalg.norm(self.position - self.current_target)
-                if distance_to_target < NEARBY_ZONE:
-                    self.speed = distance_to_target
-                    return self.step(action)
-                elif distance_to_target <= NEARBY_ZONE:
+                else:
                     self.state = FSMNurseState.COMPLETED
                     return False
 
             case FSMNurseState.COMPLETED:
                 return False
 
+            case FSMNurseState.OUTSIDE:
+                return True
+
     def step(self, action):
-        """
-        Executes a movement step based on the action and keeps the agent inside bounds.
+        action = int(action)
+        print("Action:", action, self.actions[action])
+        action_type, angle = self.actions[action]
 
-        :param action: Discrete action index (0 to num_actions-1)
-        """
-        collided = False
+        if action_type == "face":
+            self.facing = angle % (2 * np.pi)
+            return False  # No movement
 
-        # Calculate movement vector
-        relative_angle = self.angle_range[action]
-        movement_angle = self.facing + relative_angle
+        elif action_type == "move":
+            movement_angle = (self.facing + angle) % (2 * np.pi)
 
-        # Check collision
-        collided = self.lidar.check_collision(self.position, movement_angle, self.speed)
+            dx = np.cos(movement_angle) * self.speed
+            dy = np.sin(movement_angle) * self.speed
+            movement = np.array([dx, dy], dtype=np.float32)
 
-        # Movement deltas
-        dx = np.cos(movement_angle) * self.speed
-        dy = np.sin(movement_angle) * self.speed
-        movement = np.array([dx, dy], dtype=np.float32)
-
-        if not np.any(np.isnan(movement)) and not np.any(np.isinf(movement)):
             new_position = self.position + movement
 
-            # ✨ CLAMP to bounding box
-            new_position[0] = np.clip(new_position[0], self.bounding_box[0] + 1, self.bounding_box[2] - 1)
-            new_position[1] = np.clip(new_position[1], self.bounding_box[1] + 1, self.bounding_box[3] - 1)
+            x_out = new_position[0] < self.bounding_box[0] or new_position[0] > self.bounding_box[2]
+            y_out = new_position[1] < self.bounding_box[1] or new_position[1] > self.bounding_box[3]
+
+            if x_out or y_out:
+                self.state = FSMNurseState.OUTSIDE
+                return True
+
+            collided = self.lidar.check_collision(self.position, movement_angle, self.speed)
+            if collided:
+                return True
 
             self.position = new_position
-            self.facing = movement_angle % (2 * np.pi)
-
-        return collided
-
-    def compute_distance(self,action):
-        # Determine movement angle based on action and Lidar data
-        relative_angle = np.clip(action, -np.pi / 2, np.pi / 2)
-        desired_angle = self.facing + relative_angle
-
-        # Convert desired_angle to index in Lidar readings
-        desired_angle_deg = int(np.degrees(desired_angle) % 10)
-        distance_ahead = self.lidar_readings[desired_angle_deg]
-
-        # Simple obstacle avoidance: if obstacle is too close, adjust the movement angle
-        if distance_ahead < self.speed:
-            # Obstacle detected ahead, choose a new direction among the clear angles
-            desired_angle = random.choice(self.lidar.clear_angles)
-            desired_angle %= 2 * np.pi
-
-        # Calculate movement deltas
-        dx = np.cos(desired_angle) * self.speed
-        dy = np.sin(desired_angle) * self.speed
-        return dx, dy, desired_angle
+            self.facing = movement_angle
+            return False
 
     def get_observation(self):
         lidar_obs = self.lidar.get_readings(self.position, self.facing).flatten()
@@ -226,7 +178,5 @@ class NurseAgent:
         else:
             goal_vector = np.zeros_like(goal_vector)
 
-        obs = np.concatenate([lidar_obs, goal_vector])
+        obs = np.concatenate([lidar_obs, goal_vector, self.position])
         return obs.astype(np.float32)
-
-

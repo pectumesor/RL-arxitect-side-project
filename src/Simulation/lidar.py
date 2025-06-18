@@ -8,70 +8,32 @@ class Lidar:
         self.walls = walls
         self.max_range = max_range
         self.num_rays = num_rays
-        self.clear_angles = []  # Angles with no obstacle detected
         self.angles = None
         self.wall_tree = STRtree(self.walls)
 
     def get_readings(self, position, facing_angle):
-        readings = np.zeros((self.num_rays, 2), dtype=np.float32)
-        self.clear_angles = []
+        readings = np.zeros((self.num_rays,1), dtype=np.float32)
 
         origin = Point(position)
 
-        angle_min = facing_angle - np.pi / 2
-        angle_max = facing_angle + np.pi / 2
+        angle_min = facing_angle - np.pi/2
+        angle_max = facing_angle + np.pi/2
         self.angles = np.linspace(angle_min, angle_max, self.num_rays)
 
-        for i, angle in enumerate(self.angles):
-            dx = np.cos(angle) * self.max_range
-            dy = np.sin(angle) * self.max_range
+        for i, angles in enumerate(self.angles):
+            dx = np.cos(angles) * self.max_range
+            dy = np.sin(angles) * self.max_range
             ray = LineString([origin, (origin.x + dx, origin.y + dy)])
-
-            try:
-                intersections = [ray.intersection(self.walls[idx]) for idx in self.wall_tree.query(ray)]
-            except Exception:
-                intersections = []
-
+            intersections = [ray.intersection(walls) for walls in self.walls]
             min_distance = self.max_range
 
             for intersection in intersections:
-                if not intersection.is_empty:
-                    if isinstance(intersection, Point):
-                        distance = origin.distance(intersection)
-                        if distance < min_distance:
-                            min_distance = distance
-                    elif isinstance(intersection, LineString):
-                        first_coord = intersection.coords[0]
-                        if first_coord is not None:
-                            distance = origin.distance(Point(first_coord))
-                            if distance < min_distance:
-                                min_distance = distance
-                    elif hasattr(intersection, 'geoms'):
-                        for geom in intersection.geoms:
-                            if isinstance(geom, Point):
-                                distance = origin.distance(geom)
-                                if distance < min_distance:
-                                    min_distance = distance
+                if origin.distance(intersection) < min_distance:
+                    min_distance = origin.distance(intersection)
 
-            if np.isnan(min_distance) or np.isinf(min_distance):
-                min_distance = self.max_range
+            readings[i] = np.array(min_distance, dtype=np.float32)
 
-            # ✅ Safer calculation
-            endpoint_x = origin.x + np.clip(np.cos(angle), -1.0, 1.0) * np.clip(min_distance, 0.0, self.max_range)
-            endpoint_y = origin.y + np.clip(np.sin(angle), -1.0, 1.0) * np.clip(min_distance, 0.0, self.max_range)
-
-            # 🔥 Final check: if still invalid, fallback
-            if np.isnan(endpoint_x) or np.isinf(endpoint_x):
-                endpoint_x = origin.x
-            if np.isnan(endpoint_y) or np.isinf(endpoint_y):
-                endpoint_y = origin.y
-
-            readings[i] = np.array([endpoint_x, endpoint_y], dtype=np.float32)
-
-            if min_distance == self.max_range:
-                self.clear_angles.append(angle)
-
-        return readings
+            return readings
 
     def check_collision(self, position, angle, speed):
         """
@@ -85,9 +47,11 @@ class Lidar:
         dx = np.cos(angle) * speed
         dy = np.sin(angle) * speed
         movement_line = LineString([Point(position), Point(position[0] + dx, position[1] + dy)])
-        intersected_walls_tree = [movement_line.intersection(self.walls[idx]) for idx in self.wall_tree.query(movement_line)]
-        # Check if the movement line intersects any wall
-        return len(intersected_walls_tree) > 0
+        for walls in self.walls:
+            if movement_line.intersects(walls):
+                return True
+
+        return False
 
     def find_door(self, position, facing_angle):
         endpoints = self.get_readings(position, facing_angle)  # (num_rays, 2)

@@ -12,7 +12,10 @@ import pygame
 from constants import BUFFER_SIZE
 
 class MyMultiGoalEnv(gym.Env):
-    def __init__(self, poi, graph_data, node_positions, box_size, bounding_box):
+    metadata = {"render_modes": ["human"], "render_fps": 10}
+
+    def __init__(self, poi, graph_data, node_positions, box_size, bounding_box, render_mode=None):
+        self.render_mode = render_mode
         self.poi = poi
         self.graph_data = graph_data
         self.node_positions = node_positions
@@ -65,18 +68,20 @@ class MyMultiGoalEnv(gym.Env):
         random_patients = random.choices(patient_room, k=amount_patients)
         self.agent = NurseAgent(
             {
-                'nurse_station': {'position': random_nurse_station, 'door': self.lidar.find_door(random_nurse_station,90.0)},
-                f"patient_room_{0}": {'position': random_patients[0], 'door': self.lidar.find_door(random_patients[0], 90.0)}},
-                 self.walls, amount_patients=amount_patients,
+                'nurse_station': {'position': random_nurse_station},
+                f"patient_room_{0}": {'position': random_patients[0]}
+            },
+                self.walls, amount_patients=amount_patients,
                 bounding_box=self.bounding_box)
 
         # Define observation and action space
-        lidar_dim = self.agent.lidar.num_rays * 2
+        lidar_dim = self.agent.lidar.num_rays
         goal_dim = 2
+        position_dim = 2
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(lidar_dim + goal_dim,),  # e.g., (82,)
+            shape=(lidar_dim + goal_dim + position_dim,),
             dtype=np.float32
         )
 
@@ -110,7 +115,7 @@ class MyMultiGoalEnv(gym.Env):
     def render(self, mode="human"):
         if not hasattr(self, 'screen'):
             pygame.init()
-            self.screen = pygame.display.set_mode((0, 0))  # Automatically uses desktop resolution
+            self.screen = pygame.display.set_mode((0, 0))  # Fullscreen
             pygame.display.set_caption(f"Nurse Agent Environment, Current State: {self.agent.state}")
             self.clock = pygame.time.Clock()
 
@@ -129,49 +134,45 @@ class MyMultiGoalEnv(gym.Env):
                 p2 = self.to_pygame_coords(coords[i + 1])
                 pygame.draw.line(self.screen, (0, 0, 0), p1, p2, 2)
 
-        # 🏥 Draw all nurse stations in red
+        # 🏥 Draw nurse stations
         for station in self.poi['nurse_station'].values():
             pos = self.to_pygame_coords((station['x'], station['y']))
             pygame.draw.circle(self.screen, (255, 0, 0), pos, 6)
 
-        # 🛏️ Draw all patient rooms in red
+        # 🛏️ Draw patient rooms
         for room in self.poi['patient_room'].values():
             pos = self.to_pygame_coords((room['x'], room['y']))
             pygame.draw.circle(self.screen, (255, 0, 0), pos, 6)
 
-        # 👩‍⚕️ Draw the nurse (agent)
+        # 👩‍⚕️ Draw agent
         nurse_pos = self.to_pygame_coords(self.agent.position)
         pygame.draw.circle(self.screen, (0, 100, 255), nurse_pos, 6)
 
-        # ✅ Draw the current target (goal) in green
+        # ✅ Draw current target
         goal_pos = self.to_pygame_coords(self.agent.current_target)
         pygame.draw.circle(self.screen, (0, 255, 0), goal_pos, 8)
 
-        # 🧭 Draw 20-direction fan (discrete actions)
-        num_actions = 20
-        angle_range = np.linspace(-np.pi / 2, np.pi / 2, num_actions)
-        ray_length = 30  # pixels
-
+        # 🔷 Visualize 180° forward movement cone
+        move_angles = [-np.pi / 2, -np.pi / 4, 0.0, np.pi / 4, np.pi / 2]
+        ray_length = 30
         cx, cy = self.agent.position
         facing = self.agent.facing
 
-        for angle in angle_range:
-            total_angle = facing + angle
-            dx = np.cos(total_angle) * ray_length
-            dy = np.sin(total_angle) * ray_length
-
+        for rel_angle in move_angles:
+            angle = facing + rel_angle
+            dx = np.cos(angle) * ray_length
+            dy = np.sin(angle) * ray_length
             start = self.to_pygame_coords((cx, cy))
             end = self.to_pygame_coords((cx + dx, cy + dy))
-
             pygame.draw.line(self.screen, (150, 150, 255), start, end, 1)
 
-        # 🔵 Draw agent's facing direction in bold
+        # 🔵 Bold line for current facing direction
         dx = np.cos(facing) * ray_length
         dy = np.sin(facing) * ray_length
         end_facing = self.to_pygame_coords((cx + dx, cy + dy))
         pygame.draw.line(self.screen, (0, 0, 255), nurse_pos, end_facing, 2)
 
         pygame.display.flip()
-        self.clock.tick(3)
+        self.clock.tick(10)
 
 
