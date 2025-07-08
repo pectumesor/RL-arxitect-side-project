@@ -1,15 +1,10 @@
-import shapely
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
-from shapely.geometry import LineString, Point, Polygon
-from shapely.ops import unary_union
-from shapely import polygonize, multipolygons
+from shapely.geometry import LineString
 from Nurse import  NurseAgent
-import random
-from lidar import Lidar
 import pygame
-from constants import BUFFER_SIZE
+from constants import RAYS
 
 class MyMultiGoalEnv(gym.Env):
     metadata = {"render_modes": ["human"], "render_fps": 10}
@@ -35,55 +30,44 @@ class MyMultiGoalEnv(gym.Env):
             self.graph.append((pos_v, pos_w))
             self.walls.append(LineString([pos_v, pos_w]))
 
-        # Define free space (white space)
-        bounding_polygon = Polygon([
-            (self.bounding_box[0], self.bounding_box[1]),
-            (self.bounding_box[2], self.bounding_box[1]),
-            (self.bounding_box[2], self.bounding_box[3]),
-            (self.bounding_box[0], self.bounding_box[3])
-        ])
-        self.white_space = bounding_polygon.difference(unary_union(self.walls))
-
-        # Find all polygons in the drawing
-        drawing_polygons = shapely.multipolygons(shapely.get_parts(polygonize(self.walls)))
-        # Put them in an iterable list
-        self.inner_polygons = [geom for geom in drawing_polygons.geoms]
-        # Find the polygon with the largest area, this will be the outer walls of the drawing
-        self.shape = self.extract_outer_polygon(self.inner_polygons)
-        # List only holds the inner polygons
-        self.inner_polygons.remove(self.shape)
-        # Turn list back to Multipolygon to be able to use shapely.Multipolygon functions
-        self.inner_polygons = shapely.multipolygons(shapely.get_parts(self.inner_polygons))
-
-        # Initialize Lidar with max_range equal to speed
-        self.lidar = Lidar(walls=self.walls, max_range=200, num_rays=360)
-
         nurse_station =  [np.array([station['x'], station['y']]) for station
                                     in poi['nurse_station'].values()]
         patient_room = [np.array([station['x'], station['y']]) for station
                                     in poi['patient_room'].values()]
 
-        amount_patients = 1
-        random_nurse_station = random.choice(nurse_station)
-        random_patients = random.choices(patient_room, k=amount_patients)
+
         self.agent = NurseAgent(
             {
-                'nurse_station': {'position': random_nurse_station},
-                f"patient_room_{0}": {'position': random_patients[0]}
+                'nurse_stations': nurse_station,
+                "patient_rooms": patient_room
             },
-                self.walls, amount_patients=amount_patients,
-                bounding_box=self.bounding_box)
+                self.walls,bounding_box=self.bounding_box, box_size=self.box_size)
 
-        # Define observation and action space
-        lidar_dim = self.agent.lidar.num_rays
-        goal_dim = 2
-        position_dim = 2
+        # ---- OBSERVATION SPACE ---- #
+        '''
+            Our observation space consists of:
+                - An array of size 2 * RAYS
+                - RAYS entries define the distances each ray reaches until first obstacle
+                - The rest RAYS entries define which type of object the ray collided with:
+                    - 1 if it was the goal
+                    - 0 else
+        '''
+
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(lidar_dim + goal_dim + position_dim,),
+            shape=(2 * RAYS,),
             dtype=np.float32
         )
+
+        # ---- ACTION SPACE ---- #
+
+        '''
+            This is define in the Nurse.py class. We have in total 3 actions:
+                - Action 0: Turn leftwards with an angle of np.pi / 16
+                - Action 1: Move straight ahead
+                - Action 2: Turn rightwards with an angle of np.pi / 16
+        '''
 
         self.action_space = spaces.Discrete(self.agent.num_actions)
 
@@ -93,19 +77,15 @@ class MyMultiGoalEnv(gym.Env):
                 return (node["value"]["x"], node["value"]["y"])
         raise ValueError(f"Node {node_id} not found in graph data.")
 
-    def extract_outer_polygon(self, multipolygon):
-        return max(multipolygon, key=lambda p: p.area)
-
     def reset(self, seed=None, options=None):
         # Reset agents position and return his observation (i.e., position)
         super().reset(seed=seed)
         obs = self.agent.reset()
-        return obs, {}
-
+        return obs.flatten(), {}
 
     def step(self, action):
         obs, reward, done, truncated, info = self.agent.update(action)
-        return obs, reward, done, truncated, info
+        return obs.flatten(), reward, done, truncated, info
 
     def to_pygame_coords(self, point):
         """Convert world (x, y) to pygame screen coordinates."""
@@ -154,7 +134,7 @@ class MyMultiGoalEnv(gym.Env):
 
         # 🔷 Visualize 180° forward movement cone
         move_angles = [-np.pi / 2, -np.pi / 4, 0.0, np.pi / 4, np.pi / 2]
-        ray_length = 30
+        ray_length = 1 * self.agent.lidar.max_range
         cx, cy = self.agent.position
         facing = self.agent.facing
 
@@ -173,6 +153,6 @@ class MyMultiGoalEnv(gym.Env):
         pygame.draw.line(self.screen, (0, 0, 255), nurse_pos, end_facing, 2)
 
         pygame.display.flip()
-        self.clock.tick(10)
+        self.clock.tick(20)
 
 

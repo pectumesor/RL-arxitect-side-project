@@ -1,4 +1,4 @@
-from .Simulation import *
+from .RL_Hospital import *
 
 __all__ = [
     "BUFFER_SIZE",

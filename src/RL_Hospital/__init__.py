@@ -1,4 +1,4 @@
-# app/src/Simulation/__init__.py
+# app/src/RL_Hospital/__init__.py
 from skimage.segmentation import find_boundaries
 from .constants import (HOSPITAL_PATH, BUFFER_SIZE)
 from .sim import Simulator
